@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 
@@ -22,7 +22,6 @@ import SurveyorApprovalPanel, {
 
 // Database Server Actions
 import {
-  getPublicVerifiedBuildings,
   getAllBuildings,
   approveBuilding,
   savePendingBuilding,
@@ -30,8 +29,14 @@ import {
   deleteBuilding,
 } from "@/src/app/actions/cadastre";
 
+/**
+ * MapLibre must remain client-side.
+ */
 const RealWorldMapViewer = dynamic(
-  () => import("@/src/components/RealWorldMapViewer"),
+  () =>
+    import(
+      "@/src/components/RealWorldMapViewer"
+    ),
   {
     ssr: false,
   }
@@ -51,32 +56,45 @@ export default function Dashboard() {
   const [showUploader, setShowUploader] =
     useState(false);
 
+  /**
+   * All buildings loaded from PostgreSQL.
+   *
+   * Public Viewer:
+   * all buildings are displayed on the map.
+   *
+   * Surveyor:
+   * all submissions are displayed in the
+   * management panel.
+   */
   const [buildingList, setBuildingList] =
     useState<any[]>([]);
 
+  /**
+   * Currently selected building.
+   *
+   * Public Viewer starts with null so the
+   * initial screen is the all-buildings map.
+   */
   const [building, setBuilding] =
-    useState<ParsedBuilding | null>(null);
+    useState<ParsedBuilding | null>(
+      null
+    );
 
   const [selectedProperty, setSelectedProperty] =
     useState<string | null>(null);
 
   const [verification, setVerification] =
-    useState<SurveyorVerificationData | null>(null);
+    useState<SurveyorVerificationData | null>(
+      null
+    );
 
   const [loadingDb, setLoadingDb] =
     useState(false);
 
   /**
-   * ------------------------------------------------------------
-   * DATABASE BUILDING → ParsedBuilding
-   * ------------------------------------------------------------
-   *
-   * IMPORTANT:
-   *
-   * There are NO hardcoded latitude/longitude fallbacks here.
-   *
-   * The map must use the actual coordinates belonging to the
-   * uploaded cadastral building.
+   * ============================================================
+   * DATABASE BUILDING -> ParsedBuilding
+   * ============================================================
    */
   const mapDbToParsedBuilding = (
     dbBuilding: any
@@ -106,20 +124,17 @@ export default function Dashboard() {
     return {
       id:
         dbBuilding?.id ??
-        `BLDG-${Date.now()}`,
+        `BLDG-${Date.now()}-${Math.random()}`,
 
       name:
         dbBuilding?.name ??
         dbBuilding?.buildingName ??
         "Cadastral Building",
 
-      /**
-       * Only add georeference when the database actually
-       * contains valid coordinates.
-       *
-       * This prevents the application from silently placing
-       * buildings at an unrelated fallback location.
-       */
+      address:
+        dbBuilding?.address ??
+        "",
+
       ...(hasValidGeoreference
         ? {
             georeference: {
@@ -132,13 +147,19 @@ export default function Dashboard() {
       floors: floors.map(
         (floor: any) => ({
           floorNumber:
-            Number(floor?.floorNumber) || 0,
+            Number(
+              floor?.floorNumber
+            ) || 0,
 
           elevation:
-            Number(floor?.elevation) || 0,
+            Number(
+              floor?.elevation
+            ) || 0,
 
           height:
-            Number(floor?.height) || 3,
+            Number(
+              floor?.height
+            ) || 3,
 
           units: Array.isArray(
             floor?.units
@@ -149,8 +170,8 @@ export default function Dashboard() {
                     unit?.polygon;
 
                   /**
-                   * PostgreSQL may return polygon as
-                   * a JSON string.
+                   * PostgreSQL may return
+                   * polygon as JSON text.
                    */
                   if (
                     typeof polygon ===
@@ -210,9 +231,72 @@ export default function Dashboard() {
   };
 
   /**
-   * ------------------------------------------------------------
+   * ============================================================
+   * GET BUILDING STATISTICS
+   * ============================================================
+   */
+  const getBuildingStats = (
+    dbBuilding: any
+  ) => {
+    const floors =
+      Array.isArray(
+        dbBuilding?.floors
+      )
+        ? dbBuilding.floors
+        : [];
+
+    let units = 0;
+
+    for (const floor of floors) {
+      if (
+        Array.isArray(
+          floor?.units
+        )
+      ) {
+        units +=
+          floor.units.length;
+      }
+    }
+
+    return {
+      floors: floors.length,
+      units,
+    };
+  };
+
+  /**
+   * ============================================================
+   * BUILDINGS THAT CAN ACTUALLY BE PUT ON MAP
+   * ============================================================
+   *
+   * We keep every DB record in buildingList, but only pass
+   * buildings with valid GNSS coordinates to the geographic
+   * map.
+   */
+  const publicMapBuildings =
+    useMemo(() => {
+      return buildingList
+        .map(
+          mapDbToParsedBuilding
+        )
+        .filter(
+          (item) =>
+            item.georeference &&
+            Number.isFinite(
+              item.georeference
+                .latitude
+            ) &&
+            Number.isFinite(
+              item.georeference
+                .longitude
+            )
+        );
+    }, [buildingList]);
+
+  /**
+   * ============================================================
    * LOAD DATABASE RECORDS
-   * ------------------------------------------------------------
+   * ============================================================
    */
   const loadDatabaseRecords =
     async () => {
@@ -223,46 +307,18 @@ export default function Dashboard() {
          * ------------------------------------------------------
          * PUBLIC VIEWER
          * ------------------------------------------------------
+         *
+         * IMPORTANT:
+         * We intentionally use getAllBuildings().
+         *
+         * This means buildings do not have to be APPROVED
+         * just to appear as structures on the public map.
+         *
+         * No first record is automatically selected.
          */
         if (
           roleMode ===
           "PUBLIC_VIEWER"
-        ) {
-          const res =
-            await getPublicVerifiedBuildings();
-
-          if (
-            res.success &&
-            res.data &&
-            res.data.length > 0
-          ) {
-            setBuildingList(
-              res.data
-            );
-
-            /**
-             * Display the first verified building.
-             */
-            setBuilding(
-              mapDbToParsedBuilding(
-                res.data[0]
-              )
-            );
-          } else {
-            setBuildingList([]);
-            setBuilding(null);
-          }
-
-          return;
-        }
-
-        /**
-         * ------------------------------------------------------
-         * SURVEYOR
-         * ------------------------------------------------------
-         */
-        if (
-          roleMode === "SURVEYOR"
         ) {
           const res =
             await getAllBuildings();
@@ -276,16 +332,57 @@ export default function Dashboard() {
             );
 
             /**
-             * Only select the first building when there is
-             * currently no selected building.
+             * Return public viewer to
+             * map-first state.
+             */
+            setBuilding(null);
+
+            setSelectedProperty(
+              null
+            );
+
+            setVerification(null);
+          } else {
+            setBuildingList([]);
+            setBuilding(null);
+            setSelectedProperty(
+              null
+            );
+          }
+
+          return;
+        }
+
+        /**
+         * ------------------------------------------------------
+         * SURVEYOR
+         * ------------------------------------------------------
+         */
+        if (
+          roleMode ===
+          "SURVEYOR"
+        ) {
+          const res =
+            await getAllBuildings();
+
+          if (
+            res.success &&
+            res.data
+          ) {
+            setBuildingList(
+              res.data
+            );
+
+            /**
+             * Surveyor continues to open the
+             * first record for inspection.
              */
             if (
-              res.data.length > 0
+              res.data.length >
+              0
             ) {
               setBuilding(
-                (
-                  current
-                ) => {
+                (current) => {
                   if (current) {
                     return current;
                   }
@@ -300,6 +397,7 @@ export default function Dashboard() {
             }
           } else {
             setBuildingList([]);
+            setBuilding(null);
           }
 
           return;
@@ -309,12 +407,10 @@ export default function Dashboard() {
          * ------------------------------------------------------
          * UPLOADER
          * ------------------------------------------------------
-         *
-         * Do not clear the currently uploaded building here.
-         * The uploader itself controls the building state.
          */
         if (
-          roleMode === "UPLOADER"
+          roleMode ===
+          "UPLOADER"
         ) {
           return;
         }
@@ -329,32 +425,80 @@ export default function Dashboard() {
     };
 
   /**
-   * ------------------------------------------------------------
-   * LOAD DATABASE WHEN ROLE CHANGES
-   * ------------------------------------------------------------
+   * ============================================================
+   * INITIAL DATABASE LOAD + ROLE CHANGE
+   * ============================================================
    */
   useEffect(() => {
     loadDatabaseRecords();
   }, [roleMode]);
 
   /**
-   * ------------------------------------------------------------
-   * PARSED BUILDING FROM FILE UPLOADER
-   * ------------------------------------------------------------
-   *
-   * This is intentionally set BEFORE the database request.
-   *
-   * Therefore:
-   *
-   * GeoJSON
-   *    ↓
-   * ParsedBuilding
-   *    ↓
-   * setBuilding()
-   *    ↓
-   * RealWorldMapViewer
-   *
-   * The uploaded georeference reaches the map directly.
+   * ============================================================
+   * PUBLIC BUILDING SELECTED FROM MAP
+   * ============================================================
+   */
+  const handlePublicBuildingSelect =
+    (
+      selectedBuilding: ParsedBuilding
+    ) => {
+      setBuilding(
+        selectedBuilding
+      );
+
+      setSelectedProperty(
+        null
+      );
+
+      setVerification(null);
+
+      sessionStorage.setItem(
+        "activeBuildingData",
+        JSON.stringify(
+          selectedBuilding
+        )
+      );
+
+      /**
+       * Scroll to the selected-building
+       * section after rendering.
+       */
+      window.setTimeout(() => {
+        document
+          .getElementById(
+            "selected-building-view"
+          )
+          ?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          });
+      }, 50);
+    };
+
+  /**
+   * ============================================================
+   * BACK TO PUBLIC MAP
+   * ============================================================
+   */
+  const handleBackToMap = () => {
+    setBuilding(null);
+
+    setSelectedProperty(
+      null
+    );
+
+    setVerification(null);
+
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
+  };
+
+  /**
+   * ============================================================
+   * FILE UPLOADER
+   * ============================================================
    */
   const handleParsed = async (
     parsedBuilding: ParsedBuilding
@@ -370,28 +514,22 @@ export default function Dashboard() {
     );
 
     /**
-     * Immediately display the uploaded building.
+     * Immediately display uploaded
+     * building.
      */
     setBuilding(
       parsedBuilding
     );
 
-    /**
-     * Clear previous property selection.
-     */
     setSelectedProperty(
       null
     );
 
-    /**
-     * Close uploader modal.
-     */
-    setShowUploader(false);
+    setShowUploader(
+      false
+    );
 
     try {
-      /**
-       * Persist the exact ParsedBuilding to PostgreSQL.
-       */
       const res =
         await savePendingBuilding(
           parsedBuilding
@@ -403,11 +541,7 @@ export default function Dashboard() {
         );
 
         /**
-         * Refresh database records.
-         *
-         * We intentionally do not rely on this refresh to
-         * display the uploaded building because setBuilding()
-         * above already has the original GeoJSON coordinates.
+         * Refresh DB records.
          */
         await loadDatabaseRecords();
       } else {
@@ -428,9 +562,9 @@ export default function Dashboard() {
   };
 
   /**
-   * ------------------------------------------------------------
+   * ============================================================
    * STATUS CHANGE
-   * ------------------------------------------------------------
+   * ============================================================
    */
   const handleStatusChange = async (
     buildingId: string,
@@ -465,9 +599,9 @@ export default function Dashboard() {
   };
 
   /**
-   * ------------------------------------------------------------
+   * ============================================================
    * DELETE BUILDING
-   * ------------------------------------------------------------
+   * ============================================================
    */
   const handleDelete = async (
     buildingId: string
@@ -492,6 +626,7 @@ export default function Dashboard() {
           buildingId
         ) {
           setBuilding(null);
+
           setSelectedProperty(
             null
           );
@@ -516,9 +651,9 @@ export default function Dashboard() {
   };
 
   /**
-   * ------------------------------------------------------------
+   * ============================================================
    * SURVEYOR VERIFICATION
-   * ------------------------------------------------------------
+   * ============================================================
    */
   const handleVerificationComplete =
     async (
@@ -565,9 +700,9 @@ export default function Dashboard() {
     };
 
   /**
-   * ------------------------------------------------------------
+   * ============================================================
    * PROPERTY NAVIGATION
-   * ------------------------------------------------------------
+   * ============================================================
    */
   const handlePropertyNavigate = (
     property:
@@ -601,9 +736,9 @@ export default function Dashboard() {
   };
 
   /**
-   * ------------------------------------------------------------
+   * ============================================================
    * PROPERTY SELECTION
-   * ------------------------------------------------------------
+   * ============================================================
    */
   const handlePropertySelect = (
     property:
@@ -630,21 +765,41 @@ export default function Dashboard() {
     }
   };
 
+  /**
+   * ============================================================
+   * RENDER
+   * ============================================================
+   */
   return (
     <main
       style={{
         minHeight: "100vh",
-        maxHeight: "100vh",
+        width: "100%",
         maxWidth: "100vw",
-        overflowX: "hidden",
-        overflowY: "auto",
-        background: "#090d16",
-        color: "#f8fafc",
-        display: "flex",
-        flexDirection: "column",
+
+        overflowX:
+          "hidden",
+
+        overflowY:
+          "auto",
+
+        background:
+          "#090d16",
+
+        color:
+          "#f8fafc",
+
+        display:
+          "flex",
+
+        flexDirection:
+          "column",
+
         fontFamily:
           "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-        boxSizing: "border-box",
+
+        boxSizing:
+          "border-box",
       }}
     >
       {/* ======================================================
@@ -653,47 +808,86 @@ export default function Dashboard() {
 
       <header
         style={{
-          height: "70px",
-          minHeight: "70px",
-          padding: "0 28px",
+          height:
+            "70px",
+
+          minHeight:
+            "70px",
+
+          padding:
+            "0 28px",
+
           background:
-            "rgba(15, 23, 42, 0.85)",
+            "rgba(15,23,42,0.95)",
+
           backdropFilter:
             "blur(12px)",
+
           borderBottom:
             "1px solid #1e293b",
-          display: "flex",
-          alignItems: "center",
+
+          display:
+            "flex",
+
+          alignItems:
+            "center",
+
           justifyContent:
             "space-between",
-          position: "sticky",
+
+          position:
+            "sticky",
+
           top: 0,
+
           zIndex: 50,
-          maxWidth: "100vw",
-          boxSizing: "border-box",
+
+          boxSizing:
+            "border-box",
         }}
       >
+        {/* BRAND */}
+
         <div
           style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "12px",
+            display:
+              "flex",
+
+            alignItems:
+              "center",
+
+            gap:
+              "12px",
           }}
         >
           <div
             style={{
-              width: "40px",
-              height: "40px",
-              borderRadius: "9px",
+              width:
+                "40px",
+
+              height:
+                "40px",
+
+              borderRadius:
+                "9px",
+
               background:
-                "linear-gradient(135deg, #2563eb, #1d4ed8)",
-              color: "#ffffff",
-              display: "flex",
+                "linear-gradient(135deg,#2563eb,#1d4ed8)",
+
+              display:
+                "flex",
+
               alignItems:
                 "center",
+
               justifyContent:
                 "center",
-              fontWeight: 800,
+
+              fontWeight:
+                800,
+
+              color:
+                "#ffffff",
             }}
           >
             3D
@@ -702,8 +896,11 @@ export default function Dashboard() {
           <div>
             <div
               style={{
-                fontSize: "17px",
-                fontWeight: 800,
+                fontSize:
+                  "17px",
+
+                fontWeight:
+                  800,
               }}
             >
               3D ULPIN Engine
@@ -711,8 +908,11 @@ export default function Dashboard() {
 
             <div
               style={{
-                fontSize: "10px",
-                color: "#94a3b8",
+                fontSize:
+                  "10px",
+
+                color:
+                  "#94a3b8",
               }}
             >
               Volumetric Cadastre &
@@ -721,49 +921,86 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ROLE SWITCHER */}
+        {/* ====================================================
+            ROLE SWITCHER
+            ==================================================== */}
 
         <div
           style={{
-            display: "flex",
+            display:
+              "flex",
+
             background:
               "#0f172a",
-            padding: "4px",
-            borderRadius: "10px",
+
+            padding:
+              "4px",
+
+            borderRadius:
+              "10px",
+
             border:
               "1px solid #1e293b",
           }}
         >
+          {/* PUBLIC */}
+
           <button
             type="button"
-            onClick={() =>
+            onClick={() => {
               setRoleMode(
                 "PUBLIC_VIEWER"
-              )
-            }
+              );
+
+              setBuilding(
+                null
+              );
+
+              setSelectedProperty(
+                null
+              );
+
+              setVerification(
+                null
+              );
+            }}
             style={{
               padding:
                 "7px 14px",
-              borderRadius: "7px",
-              border: "none",
+
+              borderRadius:
+                "7px",
+
+              border:
+                "none",
+
               background:
                 roleMode ===
                 "PUBLIC_VIEWER"
                   ? "#2563eb"
                   : "transparent",
+
               color:
                 roleMode ===
                 "PUBLIC_VIEWER"
                   ? "#ffffff"
                   : "#94a3b8",
-              fontSize: "12px",
-              fontWeight: 700,
-              cursor: "pointer",
+
+              fontSize:
+                "12px",
+
+              fontWeight:
+                700,
+
+              cursor:
+                "pointer",
             }}
           >
             👁 Public Viewer
           </button>
 
+          {/* SURVEYOR */}
+
           <button
             type="button"
             onClick={() =>
@@ -774,25 +1011,39 @@ export default function Dashboard() {
             style={{
               padding:
                 "7px 14px",
-              borderRadius: "7px",
-              border: "none",
+
+              borderRadius:
+                "7px",
+
+              border:
+                "none",
+
               background:
                 roleMode ===
                 "SURVEYOR"
                   ? "#059669"
                   : "transparent",
+
               color:
                 roleMode ===
                 "SURVEYOR"
                   ? "#ffffff"
                   : "#94a3b8",
-              fontSize: "12px",
-              fontWeight: 700,
-              cursor: "pointer",
+
+              fontSize:
+                "12px",
+
+              fontWeight:
+                700,
+
+              cursor:
+                "pointer",
             }}
           >
             🛡 Surveyor Portal
           </button>
+
+          {/* UPLOADER */}
 
           <button
             type="button"
@@ -804,21 +1055,33 @@ export default function Dashboard() {
             style={{
               padding:
                 "7px 14px",
-              borderRadius: "7px",
-              border: "none",
+
+              borderRadius:
+                "7px",
+
+              border:
+                "none",
+
               background:
                 roleMode ===
                 "UPLOADER"
                   ? "#d97706"
                   : "transparent",
+
               color:
                 roleMode ===
                 "UPLOADER"
                   ? "#ffffff"
                   : "#94a3b8",
-              fontSize: "12px",
-              fontWeight: 700,
-              cursor: "pointer",
+
+              fontSize:
+                "12px",
+
+              fontWeight:
+                700,
+
+              cursor:
+                "pointer",
             }}
           >
             📤 Uploader Portal
@@ -833,53 +1096,84 @@ export default function Dashboard() {
       {showUploader && (
         <div
           style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 100,
+            position:
+              "fixed",
+
+            inset:
+              0,
+
+            zIndex:
+              100,
+
             background:
-              "rgba(2, 6, 23, 0.75)",
+              "rgba(2,6,23,0.75)",
+
             backdropFilter:
               "blur(6px)",
-            display: "flex",
+
+            display:
+              "flex",
+
             alignItems:
               "center",
+
             justifyContent:
               "center",
-            padding: "20px",
+
+            padding:
+              "20px",
           }}
         >
           <div
             style={{
               background:
                 "#0f172a",
+
               border:
                 "1px solid #1e293b",
+
               borderRadius:
                 "16px",
-              padding: "28px",
-              width: "100%",
-              maxWidth: "550px",
+
+              padding:
+                "28px",
+
+              width:
+                "100%",
+
+              maxWidth:
+                "550px",
+
               boxShadow:
-                "0 25px 50px -12px rgba(0, 0, 0, 0.5)",
+                "0 25px 50px -12px rgba(0,0,0,0.5)",
             }}
           >
             <div
               style={{
-                display: "flex",
+                display:
+                  "flex",
+
                 justifyContent:
                   "space-between",
+
                 alignItems:
                   "center",
+
                 marginBottom:
                   "20px",
               }}
             >
               <h2
                 style={{
-                  margin: 0,
+                  margin:
+                    0,
+
                   fontSize:
                     "18px",
-                  fontWeight: 800,
+
+                  fontWeight:
+                    800,
+
                   color:
                     "#f8fafc",
                 }}
@@ -895,15 +1189,21 @@ export default function Dashboard() {
                   )
                 }
                 style={{
-                  border: "none",
+                  border:
+                    "none",
+
                   background:
                     "#1e293b",
+
                   color:
                     "#94a3b8",
+
                   borderRadius:
                     "6px",
+
                   padding:
                     "6px 10px",
+
                   cursor:
                     "pointer",
                 }}
@@ -922,71 +1222,103 @@ export default function Dashboard() {
       )}
 
       {/* ======================================================
-          MAIN LAYOUT
+          MAIN CONTENT
           ====================================================== */}
 
       <div
         style={{
-          flex: "1 1 auto",
-          padding: "28px",
+          flex:
+            "1 1 auto",
+
+          width:
+            "100%",
+
           maxWidth:
-            "1400px",
-          width: "100%",
-          margin: "0 auto",
+            "1500px",
+
+          margin:
+            "0 auto",
+
+          padding:
+            "24px 28px 40px",
+
           boxSizing:
             "border-box",
-          minWidth: 0,
+
+          minWidth:
+            0,
         }}
       >
         {/* ====================================================
-            SURVEYOR
+            SURVEYOR PORTAL
             ==================================================== */}
 
         {roleMode ===
         "SURVEYOR" ? (
           <div
             style={{
-              display: "grid",
+              display:
+                "grid",
+
               gridTemplateColumns:
-                "360px 1fr",
-              gap: "24px",
-              minWidth: 0,
+                "360px minmax(0,1fr)",
+
+              gap:
+                "24px",
+
+              minWidth:
+                0,
             }}
           >
-            {/* SUBMISSIONS LIST */}
+            {/* SURVEYOR RECORDS */}
 
             <aside
               style={{
                 background:
-                  "rgba(15, 23, 42, 0.6)",
+                  "rgba(15,23,42,0.6)",
+
                 border:
                   "1px solid #1e293b",
+
                 borderRadius:
                   "12px",
-                padding: "18px",
+
+                padding:
+                  "18px",
+
                 maxHeight:
-                  "calc(100vh - 140px)",
+                  "calc(100vh - 120px)",
+
                 overflowY:
                   "auto",
               }}
             >
               <div
                 style={{
-                  display: "flex",
+                  display:
+                    "flex",
+
                   justifyContent:
                     "space-between",
+
                   alignItems:
                     "center",
+
                   marginBottom:
                     "16px",
                 }}
               >
                 <h3
                   style={{
-                    margin: 0,
+                    margin:
+                      0,
+
                     fontSize:
                       "15px",
-                    fontWeight: 800,
+
+                    fontWeight:
+                      800,
+
                     color:
                       "#38bdf8",
                   }}
@@ -1008,18 +1340,25 @@ export default function Dashboard() {
                   style={{
                     background:
                       "#2563eb",
+
                     border:
                       "none",
+
                     color:
                       "#fff",
+
                     fontSize:
                       "11px",
+
                     fontWeight:
                       700,
+
                     padding:
                       "6px 10px",
+
                     borderRadius:
                       "6px",
+
                     cursor:
                       "pointer",
                   }}
@@ -1033,6 +1372,7 @@ export default function Dashboard() {
                   style={{
                     fontSize:
                       "12px",
+
                     color:
                       "#94a3b8",
                   }}
@@ -1046,6 +1386,7 @@ export default function Dashboard() {
                   style={{
                     fontSize:
                       "12px",
+
                     color:
                       "#94a3b8",
                   }}
@@ -1061,6 +1402,7 @@ export default function Dashboard() {
                       key={
                         item.id
                       }
+
                       onClick={() =>
                         setBuilding(
                           mapDbToParsedBuilding(
@@ -1068,23 +1410,29 @@ export default function Dashboard() {
                           )
                         )
                       }
+
                       style={{
                         padding:
                           "12px",
+
                         borderRadius:
                           "8px",
+
                         marginBottom:
                           "12px",
+
                         background:
                           building?.id ===
                           item.id
                             ? "#1e293b"
                             : "#0f172a",
+
                         border:
                           building?.id ===
                           item.id
                             ? "1px solid #3b82f6"
                             : "1px solid #1e293b",
+
                         cursor:
                           "pointer",
                       }}
@@ -1093,8 +1441,10 @@ export default function Dashboard() {
                         style={{
                           display:
                             "flex",
+
                           justifyContent:
                             "space-between",
+
                           alignItems:
                             "center",
                         }}
@@ -1103,6 +1453,7 @@ export default function Dashboard() {
                           style={{
                             fontSize:
                               "13px",
+
                             fontWeight:
                               700,
                           }}
@@ -1116,12 +1467,16 @@ export default function Dashboard() {
                           style={{
                             fontSize:
                               "10px",
+
                             fontWeight:
                               800,
+
                             padding:
                               "2px 6px",
+
                             borderRadius:
                               "4px",
+
                             background:
                               item.approvalStatus ===
                               "APPROVED"
@@ -1130,6 +1485,7 @@ export default function Dashboard() {
                                     "REJECTED"
                                   ? "#881337"
                                   : "#854d0e",
+
                             color:
                               "#ffffff",
                           }}
@@ -1144,9 +1500,13 @@ export default function Dashboard() {
                         style={{
                           marginTop:
                             "10px",
+
                           display:
                             "flex",
-                          gap: "6px",
+
+                          gap:
+                            "6px",
+
                           flexWrap:
                             "wrap",
                         }}
@@ -1166,16 +1526,22 @@ export default function Dashboard() {
                           style={{
                             background:
                               "#334155",
+
                             border:
                               "none",
+
                             color:
                               "#cbd5e1",
+
                             fontSize:
                               "10px",
+
                             padding:
                               "4px 8px",
+
                             borderRadius:
                               "4px",
+
                             cursor:
                               "pointer",
                           }}
@@ -1198,16 +1564,22 @@ export default function Dashboard() {
                           style={{
                             background:
                               "#991b1b",
+
                             border:
                               "none",
+
                             color:
                               "#ffffff",
+
                             fontSize:
                               "10px",
+
                             padding:
                               "4px 8px",
+
                             borderRadius:
                               "4px",
+
                             cursor:
                               "pointer",
                           }}
@@ -1229,16 +1601,22 @@ export default function Dashboard() {
                           style={{
                             background:
                               "#450a0a",
+
                             border:
                               "none",
+
                             color:
                               "#f87171",
+
                             fontSize:
                               "10px",
+
                             padding:
                               "4px 8px",
+
                             borderRadius:
                               "4px",
+
                             cursor:
                               "pointer",
                           }}
@@ -1258,10 +1636,15 @@ export default function Dashboard() {
               style={{
                 display:
                   "flex",
+
                 flexDirection:
                   "column",
-                gap: "20px",
-                minWidth: 0,
+
+                gap:
+                  "20px",
+
+                minWidth:
+                  0,
               }}
             >
               {building ? (
@@ -1285,37 +1668,41 @@ export default function Dashboard() {
                     style={{
                       position:
                         "relative",
+
                       width:
                         "100%",
+
                       height:
-                        "550px",
-                      maxHeight:
-                        "550px",
+                        "650px",
+
                       borderRadius:
                         "14px",
+
                       overflow:
                         "hidden",
+
                       border:
                         "1px solid #1e293b",
-                      boxSizing:
-                        "border-box",
-                      minWidth: 0,
                     }}
                   >
                     <RealWorldMapViewer
                       key={
                         building.id
                       }
+
                       building={
                         building
                       }
+
                       approvalStatus={
                         verification?.status ||
                         "PENDING_REVIEW"
                       }
+
                       onPropertyNavigate={
                         handlePropertyNavigate
                       }
+
                       onPropertySelect={
                         handlePropertySelect
                       }
@@ -1327,8 +1714,10 @@ export default function Dashboard() {
                   style={{
                     textAlign:
                       "center",
+
                     padding:
                       "80px",
+
                     color:
                       "#94a3b8",
                   }}
@@ -1343,18 +1732,25 @@ export default function Dashboard() {
           </div>
         ) : (
           /* ==================================================
-             PUBLIC + UPLOADER
+             PUBLIC / UPLOADER
              ================================================== */
 
           <div
             style={{
               display:
                 "flex",
+
               flexDirection:
                 "column",
-              gap: "24px",
-              width: "100%",
-              minWidth: 0,
+
+              gap:
+                "24px",
+
+              width:
+                "100%",
+
+              minWidth:
+                0,
             }}
           >
             {/* ==================================================
@@ -1364,12 +1760,362 @@ export default function Dashboard() {
             {roleMode ===
               "PUBLIC_VIEWER" && (
               <>
-                {building ? (
-                  <>
+                {!building ? (
+                  /**
+                   * =================================================
+                   * MAP-FIRST PUBLIC VIEWER
+                   * =================================================
+                   *
+                   * Every database building is visible.
+                   */
+                  <section
+                    style={{
+                      width:
+                        "100%",
+
+                      height:
+                        "calc(100vh - 125px)",
+
+                      minHeight:
+                        "700px",
+
+                      maxHeight:
+                        "900px",
+
+                      borderRadius:
+                        "18px",
+
+                      overflow:
+                        "hidden",
+
+                      border:
+                        "1px solid #1e293b",
+
+                      boxShadow:
+                        "0 15px 40px rgba(0,0,0,0.2)",
+                    }}
+                  >
+                    {loadingDb ? (
+                      <div
+                        style={{
+                          width:
+                            "100%",
+
+                          height:
+                            "100%",
+
+                          minHeight:
+                            "700px",
+
+                          display:
+                            "flex",
+
+                          alignItems:
+                            "center",
+
+                          justifyContent:
+                            "center",
+
+                          background:
+                            "#e2e8f0",
+
+                          color:
+                            "#334155",
+
+                          fontSize:
+                            "14px",
+
+                          fontWeight:
+                            700,
+                        }}
+                      >
+                        Loading cadastral
+                        structures...
+                      </div>
+                    ) : publicMapBuildings.length >
+                      0 ? (
+                      <RealWorldMapViewer
+                        buildings={
+                          publicMapBuildings
+                        }
+
+                        onBuildingSelect={
+                          handlePublicBuildingSelect
+                        }
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width:
+                            "100%",
+
+                          height:
+                            "100%",
+
+                          minHeight:
+                            "700px",
+
+                          display:
+                            "flex",
+
+                          alignItems:
+                            "center",
+
+                          justifyContent:
+                            "center",
+
+                          background:
+                            "#e2e8f0",
+
+                          color:
+                            "#334155",
+
+                          textAlign:
+                            "center",
+
+                          padding:
+                            "30px",
+                        }}
+                      >
+                        <div>
+                          <div
+                            style={{
+                              fontSize:
+                                "18px",
+
+                              fontWeight:
+                                800,
+
+                              color:
+                                "#0f172a",
+                            }}
+                          >
+                            No map-ready cadastral
+                            structures found
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop:
+                                "8px",
+
+                              fontSize:
+                                "13px",
+
+                              color:
+                                "#64748b",
+
+                              maxWidth:
+                                "500px",
+                            }}
+                          >
+                            The database contains{" "}
+                            {
+                              buildingList.length
+                            }{" "}
+                            record
+                            {buildingList.length ===
+                            1
+                              ? ""
+                              : "s"}
+                            , but none currently
+                            have valid latitude and
+                            longitude coordinates.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                ) : (
+                  /**
+                   * =================================================
+                   * SELECTED BUILDING
+                   * =================================================
+                   */
+                  <div
+                    id="selected-building-view"
+                    style={{
+                      display:
+                        "flex",
+
+                      flexDirection:
+                        "column",
+
+                      gap:
+                        "24px",
+                    }}
+                  >
+                    {/* BACK TO MAP */}
+
+                    <button
+                      type="button"
+                      onClick={
+                        handleBackToMap
+                      }
+                      style={{
+                        alignSelf:
+                          "flex-start",
+
+                        padding:
+                          "9px 15px",
+
+                        borderRadius:
+                          "9px",
+
+                        border:
+                          "1px solid #334155",
+
+                        background:
+                          "#111827",
+
+                        color:
+                          "#cbd5e1",
+
+                        fontSize:
+                          "12px",
+
+                        fontWeight:
+                          700,
+
+                        cursor:
+                          "pointer",
+                      }}
+                    >
+                      ← Back to Map
+                    </button>
+
+                    {/* BUILDING HEADER */}
+
+                    <section
+                      style={{
+                        background:
+                          "linear-gradient(135deg,#111827,#0f172a)",
+
+                        border:
+                          "1px solid #263247",
+
+                        borderRadius:
+                          "16px",
+
+                        padding:
+                          "22px",
+
+                        boxShadow:
+                          "0 10px 30px rgba(0,0,0,0.12)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display:
+                            "flex",
+
+                          justifyContent:
+                            "space-between",
+
+                          alignItems:
+                            "center",
+
+                          gap:
+                            "20px",
+
+                          flexWrap:
+                            "wrap",
+                        }}
+                      >
+                        <div>
+                          <div
+                            style={{
+                              fontSize:
+                                "25px",
+
+                              fontWeight:
+                                800,
+
+                              color:
+                                "#f8fafc",
+                            }}
+                          >
+                            {
+                              building.name
+                            }
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop:
+                                "6px",
+
+                              fontSize:
+                                "12px",
+
+                              color:
+                                "#94a3b8",
+                            }}
+                          >
+                            {
+                              building.address ||
+                              "Cadastral building"
+                            }
+                          </div>
+
+                          {building.georeference && (
+                            <div
+                              style={{
+                                marginTop:
+                                  "7px",
+
+                                fontSize:
+                                  "10px",
+
+                                color:
+                                  "#64748b",
+                              }}
+                            >
+                              📍{" "}
+                              {building.georeference.latitude.toFixed(
+                                6
+                              )}
+                              ,{" "}
+                              {building.georeference.longitude.toFixed(
+                                6
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        <div
+                          style={{
+                            padding:
+                              "7px 11px",
+
+                            borderRadius:
+                              "999px",
+
+                            background:
+                              "#064e3b",
+
+                            color:
+                              "#6ee7b7",
+
+                            fontSize:
+                              "10px",
+
+                            fontWeight:
+                              800,
+                          }}
+                        >
+                          ✓ VERIFIED RECORD
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* ULPIN SEARCH */}
+
                     <ULPINSearch
                       building={
                         building
                       }
+
                       onSelectProperty={(
                         id
                       ) =>
@@ -1379,20 +2125,23 @@ export default function Dashboard() {
                       }
                     />
 
-                    {/* 3D + GRAPH */}
+                    {/* ==================================================
+                        3D + CADASTRAL GRAPH
+                        ================================================== */}
 
                     <div
                       style={{
                         display:
                           "grid",
+
                         gridTemplateColumns:
-                          "1fr 1fr",
-                        gap: "20px",
+                          "minmax(0,1fr) minmax(0,1fr)",
+
+                        gap:
+                          "20px",
+
                         width:
                           "100%",
-                        minWidth: 0,
-                        overflow:
-                          "hidden",
                       }}
                     >
                       {/* 3D MODEL */}
@@ -1400,14 +2149,20 @@ export default function Dashboard() {
                       <section
                         style={{
                           background:
-                            "rgba(15, 23, 42, 0.6)",
+                            "rgba(15,23,42,0.6)",
+
                           border:
                             "1px solid #1e293b",
+
                           borderRadius:
                             "12px",
+
                           padding:
                             "20px",
-                          minWidth: 0,
+
+                          minWidth:
+                            0,
+
                           overflow:
                             "hidden",
                         }}
@@ -1416,41 +2171,44 @@ export default function Dashboard() {
                           style={{
                             fontSize:
                               "16px",
+
                             fontWeight:
                               800,
                           }}
                         >
-                          3D Building
-                          Model
+                          3D Building Model
                         </div>
 
                         <div
                           style={{
                             marginTop:
                               "16px",
+
                             height:
-                              "420px",
-                            maxHeight:
-                              "420px",
+                              "460px",
+
                             borderRadius:
                               "10px",
+
                             overflow:
                               "hidden",
+
                             background:
                               "#020617",
+
                             border:
                               "1px solid #1e293b",
-                            position:
-                              "relative",
                           }}
                         >
                           <VolumetricViewer
                             building={
                               building
                             }
+
                             selectedPropertyId={
                               selectedProperty
                             }
+
                             onPropertySelect={(
                               property
                             ) =>
@@ -1467,56 +2225,103 @@ export default function Dashboard() {
                       <section
                         style={{
                           background:
-                            "rgba(15, 23, 42, 0.6)",
+                            "rgba(15,23,42,0.6)",
+
                           border:
                             "1px solid #1e293b",
+
                           borderRadius:
                             "12px",
+
                           padding:
                             "20px",
-                          minWidth: 0,
+
+                          minWidth:
+                            0,
+
                           overflow:
                             "hidden",
                         }}
                       >
                         <div
                           style={{
-                            fontSize:
-                              "16px",
-                            fontWeight:
-                              800,
+                            display:
+                              "flex",
+
+                            justifyContent:
+                              "space-between",
+
+                            alignItems:
+                              "center",
                           }}
                         >
-                          Cadastral Graph
+                          <div
+                            style={{
+                              fontSize:
+                                "16px",
+
+                              fontWeight:
+                                800,
+                            }}
+                          >
+                            Cadastral Graph
+                          </div>
+
+                          <div
+                            style={{
+                              padding:
+                                "4px 8px",
+
+                              borderRadius:
+                                "999px",
+
+                              background:
+                                "#172033",
+
+                              color:
+                                "#93c5fd",
+
+                              fontSize:
+                                "9px",
+
+                              fontWeight:
+                                700,
+                            }}
+                          >
+                            SELECTED
+                          </div>
                         </div>
 
                         <div
                           style={{
                             marginTop:
                               "16px",
+
                             height:
-                              "420px",
-                            maxHeight:
-                              "420px",
+                              "460px",
+
                             borderRadius:
                               "10px",
+
                             overflow:
                               "auto",
+
                             background:
                               "#020617",
+
                             border:
                               "1px solid #1e293b",
-                            position:
-                              "relative",
                           }}
                         >
                           <CadastralGraph
                             building={
                               building
                             }
+
                             selectedNodeId={
                               selectedProperty
                             }
+
                             onNodeSelect={(
                               nodeId
                             ) =>
@@ -1530,73 +2335,105 @@ export default function Dashboard() {
                     </div>
 
                     {/* ==================================================
-                        REAL WORLD MAP
+                        SELECTED BUILDING MAP
                         ================================================== */}
 
-                    <div
-                      style={{
-                        position:
-                          "relative",
-                        width:
-                          "100%",
-                        height:
-                          "550px",
-                        maxHeight:
-                          "550px",
-                        borderRadius:
-                          "14px",
-                        overflow:
-                          "hidden",
-                        border:
-                          "1px solid #1e293b",
-                        boxSizing:
-                          "border-box",
-                        minWidth: 0,
-                      }}
-                    >
-                      <RealWorldMapViewer
-                        key={
-                          building.id
-                        }
-                        building={
-                          building
-                        }
-                        approvalStatus="APPROVED"
-                        onPropertyNavigate={
-                          handlePropertyNavigate
-                        }
-                        onPropertySelect={
-                          handlePropertySelect
-                        }
-                      />
-                    </div>
+                    <section>
+                      <div
+                        style={{
+                          display:
+                            "flex",
+
+                          justifyContent:
+                            "space-between",
+
+                          alignItems:
+                            "center",
+
+                          marginBottom:
+                            "12px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize:
+                              "17px",
+
+                            fontWeight:
+                              800,
+                          }}
+                        >
+                          Real-World Cadastral
+                          Map
+                        </div>
+
+                        <div
+                          style={{
+                            fontSize:
+                              "11px",
+
+                            color:
+                              "#64748b",
+                          }}
+                        >
+                          Selected building
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          height:
+                            "700px",
+
+                          width:
+                            "100%",
+
+                          borderRadius:
+                            "16px",
+
+                          overflow:
+                            "hidden",
+
+                          border:
+                            "1px solid #1e293b",
+                        }}
+                      >
+                        <RealWorldMapViewer
+                          key={
+                            building.id
+                          }
+
+                          building={
+                            building
+                          }
+
+                          approvalStatus="APPROVED"
+
+                          onPropertyNavigate={
+                            handlePropertyNavigate
+                          }
+
+                          onPropertySelect={
+                            handlePropertySelect
+                          }
+                        />
+                      </div>
+                    </section>
+
+                    {/* EXPORT */}
 
                     <ExportPanel
                       building={
                         building
                       }
                     />
-                  </>
-                ) : (
-                  <div
-                    style={{
-                      textAlign:
-                        "center",
-                      padding:
-                        "80px",
-                      color:
-                        "#94a3b8",
-                    }}
-                  >
-                    No verified public
-                    buildings found.
                   </div>
                 )}
               </>
             )}
 
             {/* ==================================================
-                UPLOADER
+                UPLOADER PORTAL
                 ================================================== */}
 
             {roleMode ===
@@ -1604,11 +2441,14 @@ export default function Dashboard() {
               <section
                 style={{
                   background:
-                    "rgba(15, 23, 42, 0.6)",
+                    "rgba(15,23,42,0.6)",
+
                   padding:
                     "24px",
+
                   borderRadius:
                     "12px",
+
                   border:
                     "1px solid #1e293b",
                 }}
@@ -1616,9 +2456,11 @@ export default function Dashboard() {
                 <h3
                   style={{
                     margin:
-                      "0 0 12px",
+                      "0 0 6px",
+
                     fontSize:
                       "18px",
+
                     color:
                       "#f8fafc",
                   }}
@@ -1626,6 +2468,22 @@ export default function Dashboard() {
                   Upload Revisions &
                   Field Drawings
                 </h3>
+
+                <div
+                  style={{
+                    marginBottom:
+                      "18px",
+
+                    fontSize:
+                      "11px",
+
+                    color:
+                      "#64748b",
+                  }}
+                >
+                  Submit cadastral plans
+                  for surveyor verification.
+                </div>
 
                 <FileUploader
                   onParsed={
@@ -1640,3 +2498,4 @@ export default function Dashboard() {
     </main>
   );
 }
+

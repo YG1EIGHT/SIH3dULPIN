@@ -5,11 +5,10 @@ export interface GeoAnchor {
   longitude: number;
 }
 
-const EARTH_RADIUS = 6378137; // Mean Earth radius in meters
+const EARTH_RADIUS = 6378137;
 
 /**
- * Projects local Cartesian offsets (x, y in meters) relative to a GNSS anchor
- * into WGS84 Geographic coordinates [longitude, latitude].
+ * Local metres -> WGS84 [longitude, latitude]
  */
 export function projectLocalToGeographic(
   xMeters: number,
@@ -17,33 +16,83 @@ export function projectLocalToGeographic(
   anchor: GeoAnchor
 ): [number, number] {
   const dLat = yMeters / EARTH_RADIUS;
-  const dLng =
-    xMeters / (EARTH_RADIUS * Math.cos((Math.PI * anchor.latitude) / 180));
 
-  const newLat = anchor.latitude + (dLat * 180) / Math.PI;
-  const newLng = anchor.longitude + (dLng * 180) / Math.PI;
+  const dLng =
+    xMeters /
+    (EARTH_RADIUS *
+      Math.cos((Math.PI * anchor.latitude) / 180));
+
+  const newLat =
+    anchor.latitude +
+    (dLat * 180) / Math.PI;
+
+  const newLng =
+    anchor.longitude +
+    (dLng * 180) / Math.PI;
 
   return [newLng, newLat];
 }
 
 /**
+ * WGS84 [longitude, latitude] -> local metres
+ * relative to a GNSS anchor.
+ */
+export function projectGeographicToLocal(
+  longitude: number,
+  latitude: number,
+  anchor: GeoAnchor
+): Point2D {
+  const latRadians =
+    (Math.PI * anchor.latitude) / 180;
+
+  const metersPerDegreeLat =
+    (Math.PI * EARTH_RADIUS) / 180;
+
+  const metersPerDegreeLng =
+    metersPerDegreeLat *
+    Math.cos(latRadians);
+
+  return {
+    x:
+      (longitude - anchor.longitude) *
+      metersPerDegreeLng,
+
+    y:
+      (latitude - anchor.latitude) *
+      metersPerDegreeLat,
+  };
+}
+
+/**
  * Calculates bounding box origin across all 2D polygons.
  */
-export function getBuildingOrigin(polygons: Point2D[][]): Point2D {
+export function getBuildingOrigin(
+  polygons: Point2D[][]
+): Point2D {
   const points = polygons.flat();
-  if (!points.length) return { x: 0, y: 0 };
+
+  if (!points.length) {
+    return { x: 0, y: 0 };
+  }
 
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
 
   return {
-    x: (Math.min(...xs) + Math.max(...xs)) / 2,
-    y: (Math.min(...ys) + Math.max(...ys)) / 2,
+    x:
+      (Math.min(...xs) +
+        Math.max(...xs)) /
+      2,
+
+    y:
+      (Math.min(...ys) +
+        Math.max(...ys)) /
+      2,
   };
 }
 
 /**
- * Normalizes polygon points relative to an origin center.
+ * Normalizes polygon points relative to an origin.
  */
 export function normalizePolygon(
   polygon: Point2D[],
@@ -56,14 +105,23 @@ export function normalizePolygon(
 }
 
 /**
- * Calculates the centroid point of a 2D polygon.
+ * Calculates polygon center.
  */
-export function getPolygonCenter(polygon: Point2D[]): Point2D {
-  if (!polygon.length) return { x: 0, y: 0 };
+export function getPolygonCenter(
+  polygon: Point2D[]
+): Point2D {
+  if (!polygon.length) {
+    return { x: 0, y: 0 };
+  }
+
   const sum = polygon.reduce(
-    (acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }),
+    (acc, p) => ({
+      x: acc.x + p.x,
+      y: acc.y + p.y,
+    }),
     { x: 0, y: 0 }
   );
+
   return {
     x: sum.x / polygon.length,
     y: sum.y / polygon.length,
