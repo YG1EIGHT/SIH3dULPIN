@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -47,11 +46,30 @@ type RoleMode =
   | "SURVEYOR"
   | "UPLOADER";
 
+type UserRole =
+  | "VIEWER"
+  | "SURVEYOR";
+
 export default function Dashboard() {
   const router = useRouter();
 
   const [roleMode, setRoleMode] =
     useState<RoleMode>("PUBLIC_VIEWER");
+
+  /**
+   * Authentication role.
+   *
+   * VIEWER:
+   * - Public Viewer
+   * - Uploader
+   *
+   * SURVEYOR:
+   * - Public Viewer
+   * - Surveyor
+   * - Uploader
+   */
+  const [userRole, setUserRole] =
+    useState<UserRole | null>(null);
 
   const [showUploader, setShowUploader] =
     useState(false);
@@ -90,6 +108,88 @@ export default function Dashboard() {
 
   const [loadingDb, setLoadingDb] =
     useState(false);
+
+  /**
+   * ============================================================
+   * LOAD CURRENT AUTHENTICATED USER
+   * ============================================================
+   *
+   * The login API puts the real database role into the JWT.
+   * /api/auth/me reads that session and returns the role here.
+   */
+  useEffect(() => {
+    async function loadCurrentUser() {
+      try {
+        const response =
+          await fetch("/api/auth/me");
+
+        if (!response.ok) {
+          return;
+        }
+
+        const data =
+          await response.json();
+
+        if (
+          data.success &&
+          (data.user?.role === "VIEWER" ||
+            data.user?.role === "SURVEYOR")
+        ) {
+          setUserRole(
+            data.user.role
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Failed to load current user:",
+          error
+        );
+      }
+    }
+
+    loadCurrentUser();
+  }, []);
+
+  /**
+   * ============================================================
+   * PORTAL MODE AUTHORIZATION
+   * ============================================================
+   *
+   * roleMode controls which portal is currently displayed.
+   *
+   * userRole controls whether the authenticated user is
+   * actually allowed to enter that portal.
+   */
+  const handleRoleModeChange = (
+    mode: RoleMode
+  ) => {
+    /**
+     * A normal Viewer must never be able to enter
+     * the Surveyor portal.
+     */
+    if (
+      mode === "SURVEYOR" &&
+      userRole !== "SURVEYOR"
+    ) {
+      return;
+    }
+
+    setRoleMode(mode);
+
+    /**
+     * Clear selected Surveyor state when
+     * changing to another portal.
+     */
+    if (mode !== "SURVEYOR") {
+      setVerification(null);
+    }
+
+    if (mode === "PUBLIC_VIEWER") {
+      setBuilding(null);
+      setSelectedProperty(null);
+      setVerification(null);
+    }
+  };
 
   /**
    * ============================================================
@@ -268,10 +368,6 @@ export default function Dashboard() {
    * ============================================================
    * BUILDINGS THAT CAN ACTUALLY BE PUT ON MAP
    * ============================================================
-   *
-   * We keep every DB record in buildingList, but only pass
-   * buildings with valid GNSS coordinates to the geographic
-   * map.
    */
   const publicMapBuildings =
     useMemo(() => {
@@ -307,14 +403,6 @@ export default function Dashboard() {
          * ------------------------------------------------------
          * PUBLIC VIEWER
          * ------------------------------------------------------
-         *
-         * IMPORTANT:
-         * We intentionally use getAllBuildings().
-         *
-         * This means buildings do not have to be APPROVED
-         * just to appear as structures on the public map.
-         *
-         * No first record is automatically selected.
          */
         if (
           roleMode ===
@@ -331,10 +419,6 @@ export default function Dashboard() {
               res.data
             );
 
-            /**
-             * Return public viewer to
-             * map-first state.
-             */
             setBuilding(null);
 
             setSelectedProperty(
@@ -362,6 +446,22 @@ export default function Dashboard() {
           roleMode ===
           "SURVEYOR"
         ) {
+          /**
+           * Extra client-side safety.
+           *
+           * Even if roleMode somehow becomes SURVEYOR,
+           * a Viewer must not load Surveyor records.
+           */
+          if (
+            userRole !==
+            "SURVEYOR"
+          ) {
+            setRoleMode(
+              "PUBLIC_VIEWER"
+            );
+            return;
+          }
+
           const res =
             await getAllBuildings();
 
@@ -373,10 +473,6 @@ export default function Dashboard() {
               res.data
             );
 
-            /**
-             * Surveyor continues to open the
-             * first record for inspection.
-             */
             if (
               res.data.length >
               0
@@ -431,7 +527,10 @@ export default function Dashboard() {
    */
   useEffect(() => {
     loadDatabaseRecords();
-  }, [roleMode]);
+  }, [
+    roleMode,
+    userRole,
+  ]);
 
   /**
    * ============================================================
@@ -459,10 +558,6 @@ export default function Dashboard() {
         )
       );
 
-      /**
-       * Scroll to the selected-building
-       * section after rendering.
-       */
       window.setTimeout(() => {
         document
           .getElementById(
@@ -513,10 +608,6 @@ export default function Dashboard() {
       parsedBuilding.georeference
     );
 
-    /**
-     * Immediately display uploaded
-     * building.
-     */
     setBuilding(
       parsedBuilding
     );
@@ -540,9 +631,6 @@ export default function Dashboard() {
           "Plan saved to database queue with updated coordinates as PENDING_REVIEW!"
         );
 
-        /**
-         * Refresh DB records.
-         */
         await loadDatabaseRecords();
       } else {
         alert(
@@ -659,6 +747,16 @@ export default function Dashboard() {
     async (
       data: SurveyorVerificationData
     ) => {
+      /**
+       * Extra client-side protection.
+       */
+      if (
+        userRole !==
+        "SURVEYOR"
+      ) {
+        return;
+      }
+
       setVerification(
         data
       );
@@ -672,7 +770,7 @@ export default function Dashboard() {
           const res =
             await approveBuilding(
               building.id,
-              "SURVEYOR-OFFICER-01"
+            
             );
 
           if (res.success) {
@@ -947,23 +1045,11 @@ export default function Dashboard() {
 
           <button
             type="button"
-            onClick={() => {
-              setRoleMode(
+            onClick={() =>
+              handleRoleModeChange(
                 "PUBLIC_VIEWER"
-              );
-
-              setBuilding(
-                null
-              );
-
-              setSelectedProperty(
-                null
-              );
-
-              setVerification(
-                null
-              );
-            }}
+              )
+            }
             style={{
               padding:
                 "7px 14px",
@@ -1001,54 +1087,57 @@ export default function Dashboard() {
 
           {/* SURVEYOR */}
 
-          <button
-            type="button"
-            onClick={() =>
-              setRoleMode(
-                "SURVEYOR"
-              )
-            }
-            style={{
-              padding:
-                "7px 14px",
+          {userRole ===
+            "SURVEYOR" && (
+            <button
+              type="button"
+              onClick={() =>
+                handleRoleModeChange(
+                  "SURVEYOR"
+                )
+              }
+              style={{
+                padding:
+                  "7px 14px",
 
-              borderRadius:
-                "7px",
+                borderRadius:
+                  "7px",
 
-              border:
-                "none",
+                border:
+                  "none",
 
-              background:
-                roleMode ===
-                "SURVEYOR"
-                  ? "#059669"
-                  : "transparent",
+                background:
+                  roleMode ===
+                  "SURVEYOR"
+                    ? "#059669"
+                    : "transparent",
 
-              color:
-                roleMode ===
-                "SURVEYOR"
-                  ? "#ffffff"
-                  : "#94a3b8",
+                color:
+                  roleMode ===
+                  "SURVEYOR"
+                    ? "#ffffff"
+                    : "#94a3b8",
 
-              fontSize:
-                "12px",
+                fontSize:
+                  "12px",
 
-              fontWeight:
-                700,
+                fontWeight:
+                  700,
 
-              cursor:
-                "pointer",
-            }}
-          >
-            🛡 Surveyor Portal
-          </button>
+                cursor:
+                  "pointer",
+              }}
+            >
+              🛡 Surveyor Portal
+            </button>
+          )}
 
           {/* UPLOADER */}
 
           <button
             type="button"
             onClick={() =>
-              setRoleMode(
+              handleRoleModeChange(
                 "UPLOADER"
               )
             }
@@ -1761,13 +1850,6 @@ export default function Dashboard() {
               "PUBLIC_VIEWER" && (
               <>
                 {!building ? (
-                  /**
-                   * =================================================
-                   * MAP-FIRST PUBLIC VIEWER
-                   * =================================================
-                   *
-                   * Every database building is visible.
-                   */
                   <section
                     style={{
                       width:
@@ -1927,11 +2009,6 @@ export default function Dashboard() {
                     )}
                   </section>
                 ) : (
-                  /**
-                   * =================================================
-                   * SELECTED BUILDING
-                   * =================================================
-                   */
                   <div
                     id="selected-building-view"
                     style={{
@@ -1945,8 +2022,6 @@ export default function Dashboard() {
                         "24px",
                     }}
                   >
-                    {/* BACK TO MAP */}
-
                     <button
                       type="button"
                       onClick={
@@ -1983,8 +2058,6 @@ export default function Dashboard() {
                     >
                       ← Back to Map
                     </button>
-
-                    {/* BUILDING HEADER */}
 
                     <section
                       style={{
@@ -2109,8 +2182,6 @@ export default function Dashboard() {
                       </div>
                     </section>
 
-                    {/* ULPIN SEARCH */}
-
                     <ULPINSearch
                       building={
                         building
@@ -2124,10 +2195,6 @@ export default function Dashboard() {
                         )
                       }
                     />
-
-                    {/* ==================================================
-                        3D + CADASTRAL GRAPH
-                        ================================================== */}
 
                     <div
                       style={{
@@ -2144,8 +2211,6 @@ export default function Dashboard() {
                           "100%",
                       }}
                     >
-                      {/* 3D MODEL */}
-
                       <section
                         style={{
                           background:
@@ -2219,8 +2284,6 @@ export default function Dashboard() {
                           />
                         </div>
                       </section>
-
-                      {/* CADASTRAL GRAPH */}
 
                       <section
                         style={{
@@ -2334,10 +2397,6 @@ export default function Dashboard() {
                       </section>
                     </div>
 
-                    {/* ==================================================
-                        SELECTED BUILDING MAP
-                        ================================================== */}
-
                     <section>
                       <div
                         style={{
@@ -2420,8 +2479,6 @@ export default function Dashboard() {
                       </div>
                     </section>
 
-                    {/* EXPORT */}
-
                     <ExportPanel
                       building={
                         building
@@ -2498,4 +2555,3 @@ export default function Dashboard() {
     </main>
   );
 }
-

@@ -3,6 +3,44 @@
 import { prisma } from "@/src/lib/prisma";
 import { revalidatePath } from "next/cache";
 import type { ParsedBuilding } from "@/src/lib/parser/types";
+import { cookies } from "next/headers";
+import { verifySession } from "@/src/lib/auth";
+
+async function requireSurveyor() {
+  const cookieStore = await cookies();
+  const sessionToken = cookieStore.get("session")?.value;
+
+  if (!sessionToken) {
+    return {
+      authorized: false as const,
+      status: 401,
+      error: "Authentication required.",
+    };
+  }
+
+  const user = await verifySession(sessionToken);
+
+  if (!user) {
+    return {
+      authorized: false as const,
+      status: 401,
+      error: "Invalid or expired session.",
+    };
+  }
+
+  if (user.role !== "SURVEYOR") {
+    return {
+      authorized: false as const,
+      status: 403,
+      error: "Surveyor access required.",
+    };
+  }
+
+  return {
+    authorized: true as const,
+    user,
+  };
+}
 
 // 1. PUBLIC VIEWER: Fetch ONLY approved buildings
 export async function getPublicVerifiedBuildings() {
@@ -16,6 +54,7 @@ export async function getPublicVerifiedBuildings() {
         },
       },
     });
+
     return { success: true, data: buildings };
   } catch (error) {
     console.error("Error fetching public buildings:", error);
@@ -25,6 +64,16 @@ export async function getPublicVerifiedBuildings() {
 
 // 2. SURVEYOR PORTAL: Fetch ALL buildings regardless of status
 export async function getAllBuildings() {
+  const auth = await requireSurveyor();
+
+  if (!auth.authorized) {
+    return {
+      success: false,
+      data: [],
+      error: auth.error,
+    };
+  }
+
   try {
     const buildings = await prisma.building.findMany({
       orderBy: { createdAt: "desc" },
@@ -35,6 +84,7 @@ export async function getAllBuildings() {
         },
       },
     });
+
     return { success: true, data: buildings };
   } catch (error) {
     console.error("Error fetching all buildings:", error);
@@ -63,7 +113,10 @@ export async function savePendingBuilding(parsedBuilding: ParsedBuilding) {
                 unitNumber: unit.unitNumber || unit.id,
                 area: unit.area ?? 0,
                 spaceType: unit.spaceType || "RESIDENTIAL",
-                polygon: typeof unit.polygon === "string" ? unit.polygon : JSON.stringify(unit.polygon),
+                polygon:
+                  typeof unit.polygon === "string"
+                    ? unit.polygon
+                    : JSON.stringify(unit.polygon),
                 ulpin: unit.ulpin || null,
               })),
             },
@@ -76,19 +129,31 @@ export async function savePendingBuilding(parsedBuilding: ParsedBuilding) {
     return { success: true, data: created };
   } catch (error) {
     console.error("Error saving pending building:", error);
-    return { success: false, error: "Failed to persist building draft." };
+    return {
+      success: false,
+      error: "Failed to persist building draft.",
+    };
   }
 }
 
 // 4. SURVEYOR PORTAL: Approve building and auto-generate ULPINs
-export async function approveBuilding(buildingId: string, surveyorId: string) {
+export async function approveBuilding(buildingId: string) {
+  const auth = await requireSurveyor();
+
+  if (!auth.authorized) {
+    return {
+      success: false,
+      error: auth.error,
+    };
+  }
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       const updatedBuilding = await tx.building.update({
         where: { id: buildingId },
         data: {
           approvalStatus: "APPROVED",
-          surveyorId,
+          surveyorId: auth.user.id,
           verifiedAt: new Date(),
         },
         include: {
@@ -100,7 +165,10 @@ export async function approveBuilding(buildingId: string, surveyorId: string) {
 
       for (const floor of updatedBuilding.floors) {
         for (const unit of floor.units) {
-          const generatedULPIN = unit.ulpin || `14-4012-${buildingId.slice(0, 4)}-3D-F${floor.floorNumber}-${unit.unitNumber}`;
+          const generatedULPIN =
+            unit.ulpin ||
+            `14-4012-${buildingId.slice(0, 4)}-3D-F${floor.floorNumber}-${unit.unitNumber}`;
+
           if (unitDelegate) {
             await unitDelegate.update({
               where: { id: unit.id },
@@ -117,38 +185,67 @@ export async function approveBuilding(buildingId: string, surveyorId: string) {
     return { success: true, data: result };
   } catch (error) {
     console.error("Failed to approve building:", error);
-    return { success: false, error: "Approval transaction failed" };
+    return {
+      success: false,
+      error: "Approval transaction failed",
+    };
   }
 }
 
-// 5. SURVEYOR PORTAL: Update status manually (PENDING_REVIEW / REJECTED)
+// 5. SURVEYOR PORTAL: Update status manually
 export async function updateBuildingStatus(
   buildingId: string,
   status: "PENDING_REVIEW" | "REJECTED"
 ) {
+  const auth = await requireSurveyor();
+
+  if (!auth.authorized) {
+    return {
+      success: false,
+      error: auth.error,
+    };
+  }
+
   try {
     const updated = await prisma.building.update({
       where: { id: buildingId },
       data: { approvalStatus: status },
     });
+
     revalidatePath("/");
     return { success: true, data: updated };
   } catch (error) {
     console.error("Failed to update status:", error);
-    return { success: false, error: "Update failed" };
+    return {
+      success: false,
+      error: "Update failed",
+    };
   }
 }
 
 // 6. SURVEYOR PORTAL: Delete building upload permanently
 export async function deleteBuilding(buildingId: string) {
+  const auth = await requireSurveyor();
+
+  if (!auth.authorized) {
+    return {
+      success: false,
+      error: auth.error,
+    };
+  }
+
   try {
     await prisma.building.delete({
       where: { id: buildingId },
     });
+
     revalidatePath("/");
     return { success: true };
   } catch (error) {
     console.error("Failed to delete building:", error);
-    return { success: false, error: "Deletion failed" };
+    return {
+      success: false,
+      error: "Deletion failed",
+    };
   }
 }
