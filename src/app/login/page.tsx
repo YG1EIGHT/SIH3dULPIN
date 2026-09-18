@@ -3,12 +3,14 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+type LoginRole = "VIEWER" | "SURVEYOR";
 
 export default function LoginPage() {
   const router = useRouter();
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+ const [loginRole, setLoginRole] = useState<LoginRole>("VIEWER");
+const [email, setEmail] = useState("");
+const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -26,9 +28,10 @@ export default function LoginPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          email,
-          password,
-        }),
+  email,
+  password,
+  role: loginRole,
+}),
       });
 
       const data = await response.json();
@@ -196,7 +199,50 @@ export default function LoginPage() {
                 Access the 3D ULPIN property mapping platform.
               </p>
             </div>
+             {/* Login Role Toggle */}
+<div className="mb-6">
+  <p className="mb-2 text-sm font-medium text-slate-700">
+    Sign in as
+  </p>
 
+  <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
+    <button
+      type="button"
+      onClick={() => {
+        setLoginRole("VIEWER");
+        setError("");
+      }}
+      className={`rounded-lg px-4 py-3 text-sm font-semibold transition ${
+        loginRole === "VIEWER"
+          ? "bg-white text-emerald-700 shadow-sm"
+          : "text-slate-500 hover:text-slate-700"
+      }`}
+    >
+      Viewer
+    </button>
+
+    <button
+      type="button"
+      onClick={() => {
+        setLoginRole("SURVEYOR");
+        setError("");
+      }}
+      className={`rounded-lg px-4 py-3 text-sm font-semibold transition ${
+        loginRole === "SURVEYOR"
+          ? "bg-white text-emerald-700 shadow-sm"
+          : "text-slate-500 hover:text-slate-700"
+      }`}
+    >
+      Surveyor
+    </button>
+  </div>
+
+  <p className="mt-2 text-xs text-slate-500">
+    {loginRole === "VIEWER"
+      ? "For registered public users."
+      : "For authorized government surveyors."}
+  </p>
+</div>
             <form onSubmit={handleSubmit} className="space-y-5">
 
               {/* Email */}

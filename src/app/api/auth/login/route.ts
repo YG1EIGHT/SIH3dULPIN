@@ -1,7 +1,10 @@
+
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/src/lib/prisma";
 import { createSession } from "@/src/lib/auth";
+
+type LoginRole = "VIEWER" | "SURVEYOR";
 
 export async function POST(request: Request) {
   try {
@@ -9,12 +12,23 @@ export async function POST(request: Request) {
 
     const email = body.email?.trim().toLowerCase();
     const password = body.password;
+    const requestedRole = body.role as LoginRole;
 
-    if (!email || !password) {
+    if (!email || !password || !requestedRole) {
       return NextResponse.json(
         {
           success: false,
-          error: "Email and password are required.",
+          error: "Email, password, and login role are required.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (requestedRole !== "VIEWER" && requestedRole !== "SURVEYOR") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Invalid login role.",
         },
         { status: 400 }
       );
@@ -28,7 +42,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           success: false,
-          error: "Invalid email or password.",
+          error: "Invalid email, password, or login role.",
         },
         { status: 401 }
       );
@@ -43,7 +57,18 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           success: false,
-          error: "Invalid email or password.",
+          error: "Invalid email, password, or login role.",
+        },
+        { status: 401 }
+      );
+    }
+
+    // The selected login role must match the user's actual database role.
+    if (user.role !== requestedRole) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Invalid email, password, or login role.",
         },
         { status: 401 }
       );
@@ -88,3 +113,4 @@ export async function POST(request: Request) {
     );
   }
 }
+
