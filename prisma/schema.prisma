@@ -6,10 +6,14 @@ datasource db {
   provider = "postgresql"
 }
 
-enum ApprovalStatus {
-  PENDING_REVIEW
-  APPROVED
-  REJECTED
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(VIEWER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
 
 model Building {
@@ -20,9 +24,9 @@ model Building {
   approvalStatus ApprovalStatus @default(PENDING_REVIEW)
   surveyorId     String?
   verifiedAt     DateTime?
-  floors         Floor[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+  floors         Floor[]
 
   @@index([approvalStatus])
 }
@@ -30,10 +34,10 @@ model Building {
 model Floor {
   id          String     @id @default(uuid())
   buildingId  String
-  building    Building   @relation(fields: [buildingId], references: [id], onDelete: Cascade)
   floorNumber Int
   elevation   Float
   height      Float
+  building    Building   @relation(fields: [buildingId], references: [id], onDelete: Cascade)
   units       Property[]
 
   @@unique([buildingId, floorNumber])
@@ -42,11 +46,22 @@ model Floor {
 model Property {
   id         String   @id @default(uuid())
   floorId    String
-  floor      Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
   unitNumber String
   ulpin      String?  @unique
   area       Float
   spaceType  String
   polygon    Json
   createdAt  DateTime @default(now())
+  floor      Floor    @relation(fields: [floorId], references: [id], onDelete: Cascade)
+}
+
+enum ApprovalStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum UserRole {
+  VIEWER
+  SURVEYOR
 }
